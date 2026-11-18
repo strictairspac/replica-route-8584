@@ -19,3 +19,12 @@ class Trial(Base):
 class Audit(Base):
     __tablename__='audit_logs'
     id=Column(Integer,primary_key=True);actor=Column(String(120),nullable=False);action=Column(String(160),nullable=False);created_at=Column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
+class SubScenario(Base):
+    __tablename__='sub_scenarios'
+    id=Column(Integer,primary_key=True);code=Column(String(80),unique=True,nullable=False);title=Column(String(160),nullable=False);events=Column(JSON,nullable=False);note=Column(String(300),default='')
+class SubTrial(Base):
+    __tablename__='sub_trials'
+    id=Column(Integer,primary_key=True);name=Column(String(120),nullable=False);scenario_id=Column(Integer,ForeignKey('sub_scenarios.id'),nullable=False)
+    ack_policy=Column(String(20),nullable=False);delivery_ms=Column(Integer,nullable=False);ack_timeout_ms=Column(Integer,nullable=False);reconcile_rtt_ms=Column(Integer,nullable=False);inflight_window=Column(Integer,nullable=False)
+    status=Column(String(20),nullable=False,default='queued');input_snapshot=Column(JSON,nullable=False);result=Column(JSON,nullable=True);error=Column(Text,nullable=True)
+    created_at=Column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))

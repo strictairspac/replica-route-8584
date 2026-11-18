@@ -1,3 +1,6 @@
 -- Initial schema is applied idempotently by SQLAlchemy metadata.create_all.
--- Authoritative entities: users, nodes, request_sets, trials, audit_logs.
+-- Authoritative entities: users, nodes, request_sets, trials, audit_logs,
+-- sub_scenarios, sub_trials.
 -- Routing request events and frozen input/result evidence are MySQL JSON.
+-- sub_scenarios holds write/replicate/failover/ack timelines; sub_trials holds
+-- the frozen subscription-delivery snapshot, policy parameters and result JSON.

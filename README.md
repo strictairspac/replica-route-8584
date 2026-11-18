@@ -53,17 +53,45 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 输出每事件目标/拒绝、会话所需位点、实际位点、各副本四项资格、最终节点、会话状态、汇总和SHA256。相同输入产生相同摘要；不依赖随机数或外部网络。拒绝不安全读是正常业务结果，不算任务失败。快照与结果保存在MySQL，Redis只传递任务ID。
 
+## 订阅投递演练（主库故障下的键值变更供数）
+
+独立于读路由的第二套演练，回答「主库故障时订阅方还能收到哪些键值变更」。复用同一套节点台账（主/副、谱系、位点、在线状态），新增订阅场景与订阅演练两类实体，原读路由模块与路由规则不受影响。
+
+订阅事件类型（与读路由事件分开维护）：
+
+```json
+[
+  {"at_ms":0,"kind":"write","key":"signal:1","value":"OPEN"},
+  {"at_ms":20,"kind":"subscribe","subscriber":"watchtower"},
+  {"at_ms":80,"kind":"node_down","node":"harbor-primary"},
+  {"at_ms":300,"kind":"replicate","node":"south-replica","position":107,"delay_ms":20},
+  {"at_ms":500,"kind":"ack","subscriber":"watchtower","seq":1,"lost":true}
+]
+```
+
+- write：主库在线才成功并生成单调整数变更序号 seq；主库下线时写入失败，不占序号、不供数。
+- 供数选择：主库在线由主库供数；主库下线后，在线、同谱系、已应用位点覆盖该变更的副本接力供数（按延迟/位点/名称排序）；没有任何节点持有该位点则订阅方进入「缺位点等待」，直到副本 replicate 追平后再投递。
+- subscribe 建立订阅，可用 from_position_seq 指定起点；sub_down/sub_up 模拟订阅连接中断与恢复。
+- ack 回执：`lost:true` 表示回执在网络中丢失；`out_of_order:true` 表示乱序回执。订阅进度只按连续回执推进，乱序或丢失的回执不能越过未确认变更，缺口补齐后暂存回执连续补位。
+- 中断恢复后从未确认位点重试，订阅方按 seq 幂等去重，重复投递不会重复入账（applied 只记一次）。
+- 丢回执策略二选一，演示「重复收件 vs 追平速度」的取舍：
+  - `resend`：超时即重发，追平快，但订阅方会收到重复件（靠 seq 幂等去重，重复件触发自动补回执）。
+  - `reconcile`：超时先发起查清（probe）往返，确认订阅方已收位点后只补回执、零重复收件；未持有才补投，代价是多一次往返、追平更慢。
+- 在途窗口 inflight_window 限制未确认变更数量；自动重发有上限（默认8次），超限保留未确认状态，保证确定性重放收敛。
+
+输出含已提交变更清单、各订阅方 acked/delivered/追平耗时/重复收件/暂存乱序回执、写入/复制/故障/投递/回执五条泳道的完整时序、汇总与SHA256。引擎为纯标准库实现，可用 `python3 -I tests/test_subscription.py` 离线运行17条单元测试。
+
 ## 工程说明
 
 |服务|技术|职责|
 |---|---|---|
-|frontend|原生HTML/CSS/JS + Nginx|4业务页、编辑表单、共享组件、/api代理|
+|frontend|原生HTML/CSS/JS + Nginx|读路由4页+订阅3页、编辑表单、共享组件、时序泳道、/api代理|
 |backend|Python3.11/FastAPI/SQLAlchemy/PyJWT|校验、权限、审计、快照与导出|
-|worker|Python3.11|会话时序与路由算法|
-|db|MySQL8.0|真实持久化业务和JSON证据|
-|redis|Redis7|持久队列|
+|worker|Python3.11|读路由算法与订阅投递算法，串行消费两个Redis队列|
+|db|MySQL8.0|真实持久化业务和JSON证据（含sub_scenarios/sub_trials）|
+|redis|Redis7|持久队列（replicaroute:queue 与 subdelivery:queue）|
 
-各实体贯穿 `backend/src/{models,schemas,services,routes}` 和 `frontend/src/{api,stores,pages}`；其余强制目录含controllers/middlewares/config/constants/utils、components/common/hooks/types/router。三组件table/badge/frame共用；hooks/session/feedback和utils/forms/html共用；request_id/errors双中间件。
+各实体贯穿 `backend/src/{models,schemas,services,routes}` 和 `frontend/src/{api,stores,pages}`；订阅模块对应 `sub_scenarios/sub_trials/sub_evidence` 与 `sub_*` 后端文件。其余强制目录含controllers/middlewares/config/constants/utils、components/common/hooks/types/router。三组件table/badge/frame共用；hooks/session/feedback和utils/forms/html共用；request_id/errors双中间件。
 
 共享枚举角色admin/operator/viewer与任务queued/running/completed/failed位于 `backend/src/constants/enums.py` / `frontend/src/constants/enums.js`，security/trials、frame/badge消费。节点角色primary/replica和状态healthy/down由node schema及前端表单定义，事件类型由request_set schema及路由算法定义。
 
